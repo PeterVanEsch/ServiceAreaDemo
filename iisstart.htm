@@ -1,0 +1,937 @@
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="initial-scale=1, maximum-scale=1, user-scalable=no">
+	<title>Peter Van Esch - Electric Car Service</title>
+	<style>
+		html,
+		body,
+		#viewDiv {
+			padding: 0;
+			margin: 0;
+			height: 100%;
+			width: 100%;
+		}
+
+		#slider-container {
+			position: absolute;
+			top: 70px;
+			/* below the combobox */
+			left: 10px;
+			width: 300px;
+			z-index: 10;
+		}
+
+		#dropdown-container {
+			/* Displaying a ComboBox values */
+			position: absolute;
+			top: 160px;
+			left: 10px;
+			width: 300px;
+			/* Controls combobox width */
+			z-index: 10;
+		}
+	</style>
+	<link rel="stylesheet" href="https://js.arcgis.com/4.32/esri/themes/light/main.css">
+	<script src="https://js.arcgis.com/4.32"></script>
+	<script type="module" src="https://js.arcgis.com/calcite-components/3.0.3/calcite.esm.js"></script>
+	<script>
+		require([
+			"esri/config", // API Key
+			"esri/Map",  // Map Container
+			"esri/views/MapView",  // View for the map
+			"esri/rest/networkService",  // fetching network travel modes
+			"esri/rest/serviceArea",  // solving service area analysis
+			"esri/rest/support/ServiceAreaParameters",  // service area parameters
+			"esri/rest/support/FeatureSet",
+			"esri/Graphic",  // for drawing graphics??
+			"esri/renderers/UniqueValueRenderer",
+			"esri/symbols/SimpleFillSymbol",
+			"esri/layers/FeatureLayer",
+			"esri/geometry/geometryEngine",
+			"esri/widgets/Legend",
+			"esri/request", // for finding charging stations
+			"esri/geometry/support/webMercatorUtils", // for converting coordinates
+			"esri/layers/RouteLayer", // these two are for navigation path
+			"esri/rest/support/Stop",
+			"esri/rest/places",
+			"esri/rest/support/PlacesQueryParameters",
+			"esri/geometry/Extent",
+			"esri/geometry/SpatialReference",
+			"esri/layers/GraphicsLayer",
+			"esri/symbols/WebStyleSymbol",
+			"esri/widgets/Directions",
+			"esri/core/reactiveUtils",
+			"esri/geometry/Point",
+			"esri/renderers/SimpleRenderer",
+			"esri/layers/support/FeatureFilter",
+
+		], function (
+			esriConfig,
+			Map,
+			MapView,
+			networkService,
+			serviceArea,
+			ServiceAreaParameters,
+			FeatureSet,
+			Graphic,
+			UniqueValueRenderer,
+			SimpleFillSymbol,
+			FeatureLayer,
+			geometryEngine,
+			Legend,
+			esriRequest,
+			webMercatorUtils,
+			RouteLayer,
+			Stop,
+			places,
+			PlacesQueryParameters,
+			Extent,
+			SpatialReference,
+			GraphicsLayer,
+			WebStyleSymbol,
+			Directions,
+			reactiveUtils,
+			Point,
+			SimpleRenderer,
+			FeatureFilter,
+		) {
+			/* START AREA for setting variables to NULL================================================================================================================*/
+			let travelMode = null;
+			let batteryPercent = 100; // default
+			let showRing20to10 = false;
+			let showRing10to5 = false;
+			let showRing5 = false;
+			let driveTimeRings = null;
+			let legend = null;
+			let storedRing5 = null;
+			let storedRing10to5 = null;
+			let storedRing20to10 = null;
+			let placesLayer = new GraphicsLayer();
+			let stationRange = 5; // default
+			let currentRouteGeometry = null;
+			let ring20toFullList = [];
+			let ring10to20List = [];
+			let ring5to10List = [];
+			let yesShowRings = false;
+
+
+
+			/* END AREA for setting variables to NULL================================================================================================================*/
+
+
+			/* START Intitial Map Set Up ================================================================================================================*/
+			const apiKey = "AAPTxy8BH1VEsoebNVZXo8HurHTVKVcajX9Ss3P_sH8_PcGFb5Ebty8k5GNerk4_ZP6tHhNqUIgLLwmjB2k3vhbDadk84G9WZRt0_1WUfWDLHP3iCp11X1nABwEN29MaRYRCTMcRkb6wn85JmqrczzjLTHXlwJtmVBsD8pYWnXt394-BzPO_VFIK_46THCUrEWAzDS-YDn4qj4Jk61_ZAIAcA3St87p2SAqWEcjtIkKFKK4.AT1_a8pn0Yrl";
+			const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
+
+			const routeLayer = new RouteLayer({
+				defaultSymbols: {
+					directionLines: {
+						type: "simple-line",
+						color: [148, 26, 4],
+						width: 3,
+						cap: "round",
+						join: "round"
+					},
+					directionPoints: {
+						type: "simple-marker",
+						size: 0
+					},
+					routeInfo: {
+						type: "simple-line",
+						width: 0
+					},
+					stops: {
+
+						middle: {
+							type: "simple-marker",
+							style: "diamond", // or "square", "x", "cross"
+							color: [245, 195, 29, 0.5],
+							size: 20,
+							outline: {
+								color: "black",
+								width: 2
+							}
+						}
+					}
+				}
+
+			});
+			// new RouteLayer must be added to the map
+			const map = new Map({
+				basemap: "topo-vector",
+				layers: [routeLayer],
+			});
+
+
+			const view = new MapView({
+				zoom: 14,
+				center: [-118.24, 34.05],
+				container: "viewDiv",
+				map: map,
+			});
+
+			// new RouteLayer must be added to Directions widget
+			const directionsWidget = new Directions({
+				apiKey,
+				layer: routeLayer,
+				//apiKey: Directions.apiKey,
+				view,
+			});
+			directionsWidget.visible = false;
+
+
+			// Add the Directions widget to the top right corner of the view
+			view.ui.add(directionsWidget, {
+				position: "top-right",
+			});
+
+			//custom action
+			const addToRouteAction = {
+				title: "Add to Route",
+				id: "add-to-route",
+				icon: "plus",
+			};
+
+			const url2 = "https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/Alternate_Fuel/FeatureServer/0";
+			const chargingStations = new FeatureLayer({
+				url: url2, // *** Change this ***
+				visible: false,
+				renderer: new SimpleRenderer({
+					symbol: new WebStyleSymbol({
+						name: "Electric Car Charging_1",
+						styleUrl: "https://cdn.arcgis.com/sharing/rest/content/items/6eeef46c653b40c9bda04f9bed913b70/data"
+					})
+				}),
+				popupTemplate: {
+					title: "{Station_Name}",
+					content: [{
+						type: "fields",
+						fieldInfos: [
+							{
+								fieldName: "Address",
+								label: "Address"
+							},
+							{
+								fieldName: "Phone_Number",
+								label: "Phone Number"
+							},
+							{
+								fieldName: "EV_Connector_Types",
+								label: "Connector Types"
+							},
+							{
+								fieldName: "Access_Hours",
+								label: "Access Hours"
+							},
+							{
+								fieldName: "Payment_Methods",
+								label: "Payment Methods"
+							}
+						]
+					}],
+					actions: [addToRouteAction]
+				}
+
+			});
+
+			const reachableLegsLayer = new GraphicsLayer();
+			view.map.add(reachableLegsLayer, map.layers.length + 100);
+
+			/* END Initial Map setup================================================================================================================*/
+
+
+
+			/* START Feature map Rendering ==========================================================================================================================================================*/
+			// building out renderer with labels
+			const renderer = new UniqueValueRenderer({
+				field: "batteryRemaining",
+				uniqueValueInfos: [
+					{
+						value: 10,
+						symbol: new SimpleFillSymbol({
+							color: [255, 0, 0, 0.3], // Red, 30% opacity
+							outline: { color: "black", width: 1 }
+						}),
+						label: "5% Remaining"
+					},
+					{
+						value: 20,
+						symbol: new SimpleFillSymbol({
+							color: [255, 165, 0, 0.3], // Orange, 30% opacity
+							outline: { color: "black", width: 1 }
+						}),
+						label: "10% Remaining"
+					},
+					{
+						value: 5,
+						symbol: new SimpleFillSymbol({
+							color: [0, 128, 0, 0.3], // Green, 30% opacity
+							outline: { color: "black", width: 1 }
+						}),
+						label: "20% Remaining"
+					}
+				]
+			});  // end of renderer logic
+			/* END Feature map Rendering ==========================================================================================================================================================*/
+
+
+			/* START JavaScript Functions ============================================================================================================================================================*/
+			async function findServiceArea(locationFeature) {
+				console.log('here');
+
+				//  Show loader
+				const loader = document.getElementById("service-area-loader");
+				loader.hidden = false;
+				const alertGeo = document.getElementById("geo-alert");
+				const titleGeo = document.getElementById("geo-title");
+				const messageGeo = document.getElementById("geo-message");
+
+				try {
+					if (!travelMode) {
+						const networkDescription = await networkService.fetchServiceDescription(url, apiKey);
+						travelMode = networkDescription.supportedTravelModes.find(
+							(travelMode) => travelMode.name === "Driving Distance"
+						);
+					}
+
+					let effectiveRange20 = selectedRange * (batteryPercent - 20) / 100;
+					let effectiveRange10 = selectedRange * (batteryPercent - 10) / 100;
+					let effectiveRange5 = selectedRange * (batteryPercent - 5) / 100;
+
+					console.log("Range if stopping at 20%:", effectiveRange20);
+					console.log("Range if stopping at 10%:", effectiveRange10);
+					console.log("Range if stopping at 5%:", effectiveRange5);
+
+					const serviceAreaParameters = new ServiceAreaParameters({
+						apiKey,
+						facilities: new FeatureSet({
+							features: [locationFeature]
+						}),
+						defaultBreaks: [effectiveRange20, effectiveRange10, effectiveRange5],
+						travelMode,
+						outSpatialReference: view.spatialReference,
+						trimOuterPolygon: true
+					});
+
+					const { serviceAreaPolygons } = await serviceArea.solve(url, serviceAreaParameters);
+					const features = serviceAreaPolygons.features;
+					console.log(features);
+					if (features.length < 3) {
+						console.warn("Expected 3 polygons for 20%, 10%, and 5% battery ranges.");
+
+						alertGeo.kind = "danger";
+						titleGeo.textContent = "Solver Fail";
+						messageGeo.textContent = `Solver did not produce 3 Geometries`;
+
+
+						alertGeo.open = true;
+						return;
+					}
+
+					const outer = features[0].geometry;
+					const middle = features[1].geometry;
+					const inner = features[2].geometry;
+
+					const ring5to10 = geometryEngine.difference(outer, middle);
+					const ring10to20 = geometryEngine.difference(middle, inner);
+					const ring20tofull = inner;
+
+					ring20toFullList.push(ring20tofull);
+					ring10to20List.push(ring10to20);
+					ring5to10List.push(ring5to10);
+
+					if (ring20toFullList.length == 1) {
+
+						storedRing5 = ring20toFullList[0];
+						storedRing10to5 = ring5to10List[0];
+						storedRing20to10 = ring10to20List[0];
+						showServiceAreas(storedRing5, storedRing10to5, storedRing20to10);
+
+						const area = geometryEngine.geodesicArea(storedRing5, "square-miles");
+						console.log(area);
+
+					}
+					else {
+						const union20 = geometryEngine.union(ring20toFullList);
+						const union10to20 = geometryEngine.union(ring10to20List);
+						const union5to10 = geometryEngine.union(ring5to10List);
+
+						// Proper ring carving:
+						const ring20full = union20;
+						const ring10to20 = geometryEngine.difference(union10to20, union20);
+						const ring5to10 = geometryEngine.difference(union5to10, geometryEngine.union([union10to20, union20]));
+
+						storedRing5 = ring20full;      // Outermost: green
+						storedRing10to5 = ring5to10;   // Innermost: red
+						storedRing20to10 = ring10to20
+
+
+						console.log("after union");
+						showServiceAreas(storedRing5, storedRing10to5, storedRing20to10);
+
+						const area = geometryEngine.geodesicArea(storedRing5, "square-miles");
+						console.log(area);
+					}
+
+
+
+					alertGeo.open = true;
+				} catch (error) {
+					console.error("Error solving service area:", error);
+					alertGeo.kind = "danger";
+					titleGeo.textContent = "Solver Fail";
+					messageGeo.textContent = `Solver  timed out`;
+
+
+					alertGeo.open = true;
+				} finally {
+					//  Hide loader no matter what
+					loader.hidden = true;
+					checkbox1.disabled = false;
+					checkbox2.disabled = false;
+					checkbox3.disabled = false;
+
+				}
+			}
+
+
+			async function filterChargingStations(geometry) {
+				view.map.add(chargingStations);
+				const layerView = await view.whenLayerView(chargingStations);
+
+				layerView.filter = new FeatureFilter({
+					geometry,
+					distance: stationRange, // buffer distance from slider
+					units: "miles"
+				});
+				layerView.visible = true;
+
+				// wait for filter to take effect
+				await reactiveUtils.whenOnce(() => layerView.updating === false && layerView.dataUpdating === false);
+
+				// now query visible features
+				const { features } = await layerView.queryFeatures();
+				const count = features.length;
+
+				// update alert
+				const alert = document.getElementById("range-alert");
+				const title = document.getElementById("alert-title");
+				const message = document.getElementById("alert-message");
+
+				title.textContent = "Charging Stations Found";
+				message.textContent = `Found ${count} charging station${count === 1 ? "" : "s"} within ${stationRange} miles.`;
+				alert.kind = count > 0 ? "success" : "warning";
+				alert.open = true;
+			}
+			/* END JavaScript Functions ============================================================================================================================================================*/
+
+
+
+
+			/* START Display MAP * =====================================================================================================================================================================*/
+			async function showServiceAreas(ring5, ring10to5, ring20to10) {
+				if (driveTimeRings) {
+					view.map.remove(driveTimeRings);
+					view.ui.remove(legend);
+				}
+
+				const source = [];
+
+				if (showRing5) {
+					source.push(
+						new Graphic({
+							geometry: ring5,
+							attributes: { oid: 1, batteryRemaining: 5 }
+						})
+					);
+				}
+
+				if (showRing10to5) {
+					source.push(
+						new Graphic({
+							geometry: ring10to5,
+							attributes: { oid: 2, batteryRemaining: 10 }
+						})
+					);
+				}
+
+				if (showRing20to10) {
+					source.push(
+						new Graphic({
+							geometry: ring20to10,
+							attributes: { oid: 3, batteryRemaining: 20 }
+						})
+					);
+				}
+
+				// Only proceed if something is actually being displayed
+				if (source.length === 0) {
+					console.warn("No rings selected for display.");
+					return;
+				}
+
+				driveTimeRings = new FeatureLayer({
+					fields: [
+						{ name: "oid", alias: "oid", type: "oid" },
+						{ name: "batteryRemaining", alias: "Battery Remaining (%)", type: "double" }
+					],
+					objectIdField: "oid",
+					geometryType: "polygon",
+					spatialReference: view.spatialReference,
+					source,
+					renderer
+				});
+
+				view.map.add(driveTimeRings);
+				legend = new Legend({
+					view: view,
+					layerInfos: [
+						{
+							layer: driveTimeRings,
+							title: "Battery Remaining Zones"
+						}
+					]
+				});
+
+				// add legend to map
+				view.ui.add(legend, "bottom-right");
+			}
+			/* END Display MAP * =====================================================================================================================================================================*/
+
+			/* START Connecting Varaiables to CSS ============================================================================================================================================================*/
+			// get element by id
+			const slider = document.getElementById("battery-slider");
+			const dropdown = document.getElementById("car-dropdown");
+			const dropdownGroup = document.getElementById("car-options-group");
+			const stationSlider = document.getElementById("range-slider");
+			const chargingBlock = document.getElementById("charging-block");
+			const findChargers = document.getElementById("find-stations-button");
+			const nofindChargers = document.getElementById("no-find-stations-button");
+			const checkbox1 = document.getElementById("show-ring-5-10");
+			const checkbox2 = document.getElementById("show-ring-10-20");
+			const checkbox3 = document.getElementById("show-ring-20-full");
+			const statusContainer = document.getElementById("leg-status-messages");
+			const findGeometry = document.getElementById("find-geometry");
+			
+
+
+
+
+			// Sample car entries
+			const carRanges = {  // Car table values 
+				"Mercedes-Benz EQS 450+ ( WILL FAIL )": 168,
+				"Lucid Air Grand Touring": 0.15,
+				"Mercedes-Benz EQS 450 4MATIC": 480,
+				"Mercedes-Benz EQS 500 4MATIC": 64.0,
+				"Mercedes-Benz EQS 580 4MATIC": 64.0,
+				"Audi A6 Sportback e-tron performance": 61.0,
+				"Audi A6 Sportback e-tron quattro": 59.0,
+				"Mercedes-Benz EQS AMG 53 4MATIC+": 58.5,
+				"Lucid Air Touring": 58.0,
+				"Porsche Taycan Plus": 57.5,
+				"Tesla Model S Dual Motor": 57.5,
+				"Audi A6 Avant e-tron performance": 57.5,
+				"Mercedes-Benz EQS 350": 57.0,
+				"Porsche Taycan 4S Plus": 56.5,
+				"Mercedes-Benz CLA 250+": 56.5,
+				"Lucid Air Pure RWD": 56.5,
+				"Porsche Taycan 4 Plus": 56.5,
+				"Tesla Model S Plaid": 56.0,
+				"Audi A6 Avant e-tron quattro": 56.0,
+				"Mercedes-Benz EQE 350+": 55.5,
+				"Audi S6 Sportback e-tron": 55.5,
+				"Mercedes-Benz CLA 350 4MATIC": 55.0,
+				"DS N°8 FWD Long Range": 54.5
+			};
+
+			// add to drop down
+			for (const [carName, range] of Object.entries(carRanges)) {
+				const item = document.createElement("calcite-dropdown-item");
+				item.textContent = carName;
+				item.setAttribute("value", carName); // Set a value attribute to reference later
+				dropdownGroup.appendChild(item);
+			}
+
+			// Listen for selection
+			dropdown.addEventListener("calciteDropdownItemSelect", (event) => {
+				const selectedItem = event.target; // the clicked <calcite-dropdown-item>
+				const selectedCar = selectedItem.getAttribute("value");
+				selectedRange = carRanges[selectedCar] || 0.1;
+				console.log(`Selected car: ${selectedCar}, range: ${selectedRange} km`);
+				directionsWidget.visible = true;
+				document.getElementById("selected-car-display").textContent = selectedCar;
+			});
+
+			slider.addEventListener("calciteSliderInput", (event) => {
+				batteryPercent = event.target.value;
+				console.log(`Battery percent: ${batteryPercent}%`);
+			});
+			document.getElementById("show-ring-5-10").addEventListener("calciteCheckboxChange", (event) => {
+				showRing10to5 = event.target.checked;
+				if (storedRing5 && storedRing10to5 && storedRing20to10) {
+					showServiceAreas(storedRing5, storedRing10to5, storedRing20to10);
+				}
+			});
+
+			document.getElementById("show-ring-10-20").addEventListener("calciteCheckboxChange", (event) => {
+				showRing20to10 = event.target.checked;
+				if (storedRing5 && storedRing10to5 && storedRing20to10) {
+					showServiceAreas(storedRing5, storedRing10to5, storedRing20to10);
+				}
+			});
+
+			document.getElementById("show-ring-20-full").addEventListener("calciteCheckboxChange", (event) => {
+				showRing5 = event.target.checked;
+				if (storedRing5 && storedRing10to5 && storedRing20to10) {
+					showServiceAreas(storedRing5, storedRing10to5, storedRing20to10);
+				}
+			});
+
+			document.getElementById("find-stations-button").addEventListener("click", async () => {
+				const routeGeometry = routeLayer.routeInfo?.geometry;
+				if (!routeGeometry) {
+					console.warn("No route geometry found.");
+					return;
+				}
+				view.map.add(chargingStations);
+				filterChargingStations(routeGeometry);
+				currentRouteGeometry = routeGeometry;
+				stationSlider.disabled = false;
+
+			});
+			document.getElementById("no-find-stations-button").addEventListener("click", async () => {
+				view.map.remove(chargingStations);
+				stationSlider.disabled = true;
+
+			});
+
+			document.getElementById("find-geometry").addEventListener("click", async () => {
+				const routePoint = directionsWidget.layer?.routeInfo;
+				if (!routePoint || !routePoint.geometry) {
+					console.warn("No route geometry found.");
+					return;
+				}
+				const polyline = routePoint.geometry;
+				const [x, y] = polyline.paths[0][0];
+
+				const originPoint = {
+					type: "point",
+					x,
+					y,
+					spatialReference: polyline.spatialReference
+				};
+				yesShowRings = true;
+				const locationFeature = new Graphic({ geometry: originPoint });
+				findServiceArea(locationFeature);
+			});
+
+
+
+			stationSlider.addEventListener("calciteSliderInput", (event) => {
+				stationRange = event.target.value;
+				console.log(`Electric Vehicle Searching Range: ${stationRange}`);
+				if (currentRouteGeometry) {
+					filterChargingStations(currentRouteGeometry);
+				}
+			});
+
+			
+
+
+
+			reactiveUtils.watch(
+				() => directionsWidget.layer?.routeInfo,
+				async (routeInfo) => {
+
+					if (!routeInfo || !routeInfo.geometry) {
+						console.log("yes it was changed!!");
+						view.map.remove(chargingStations);
+						stationSlider.disabled = true;
+						findChargers.disabled = true;
+						nofindChargers.disabled = true;
+						findGeometry.disabled = true;
+						checkbox1.disabled = true;
+						checkbox2.disabled = true;
+						checkbox3.disabled = true;
+						view.ui.remove(legend, "bottom-right");
+						view.map.remove(driveTimeRings);
+						view.map.remove(reachableLegsLayer);
+						return;
+					}  //  Guard against null
+					console.log(map.layers.length);
+					view.map.add(routeLayer);
+					view.map.add(reachableLegsLayer, map.layers.length + 100);
+
+					reachableLegsLayer.removeAll();
+					stationSlider.disabled = false;
+					findChargers.disabled = false;
+					nofindChargers.disabled = false;
+					findGeometry.disabled = false;
+					console.log("yes somethoing is happening here, so recompute charging stations too");
+					currentRouteGeometry = routeInfo.geometry;
+
+					// console.log(routeInfo.geometry); // geometry of re-solved route
+					const originalStops = directionsWidget.layer.stops.items.slice();
+					const effectiveRange5 = selectedRange * (batteryPercent) / 100;
+					let canBeMade = false;
+					const legMessages = [];
+					let count = 0;
+					for (let i = 0; i < originalStops.length - 1; i++) {
+						count += 1;
+						const legStart = originalStops[i];
+						const legEnd = originalStops[i + 1];
+
+						console.log("Checking leg", i, "from", legStart, "to", legEnd);
+						console.log(legStart.geometry.x);
+						// Replace stops with this leg pair
+						directionsWidget.layer.stops.items = [legStart, legEnd];
+
+						directionsWidget.layer.stops.forEach((stop) => (stop.sequence = null));
+
+						const legSolution = await directionsWidget.layer.solve({ apiKey });
+
+						const legDistanceKm = legSolution.routeInfo.totalDistance / 1000;
+
+						const legDistanceMiles = (legDistanceKm * 0.621371).toFixed(1);
+						const rangeMiles = (effectiveRange5 * 0.621371).toFixed(1);
+						console.log(`Leg ${i + 1} distance (km): ${legDistanceKm}`);
+
+						const x = legStart.geometry.x;
+						const y = legStart.geometry.y;
+
+						// const [x, y] = polylineNext.paths[0][0];
+
+						const originPointNext = {
+							type: "point",
+							x,
+							y,
+							spatialReference: legStart.geometry.spatialReference
+						};
+						console.log(originalStops.length - 2);
+						const locationFeatureNext = new Graphic({ geometry: originPointNext });
+						if (yesShowRings && i === originalStops.length - 2) {
+							console.log("In Here");
+							findServiceArea(locationFeatureNext);
+						}
+
+						if (legDistanceKm > effectiveRange5) {
+							console.warn(`Leg ${i + 1} is too far!`);
+							canBeMade = false;
+
+
+							legMessages.push(`❌ Leg ${i + 1} is ${legDistanceMiles} mi but your range is ~${rangeMiles} mi. Add another stop.`);
+							break;
+						}
+						else {
+							legMessages.push(`✅ Leg ${i + 1} is ${legDistanceMiles} mi — OK`);
+							const legGeometry = legSolution.routeInfo.geometry;
+
+							const legGraphic = new Graphic({
+								geometry: legGeometry,
+								symbol: {
+									type: "simple-line",
+									color: [50, 181, 43],
+									width: 5
+								}
+							});
+
+							reachableLegsLayer.add(legGraphic);
+
+						}
+
+						canBeMade = true;
+					}
+
+					// Restore original stops AFTER the loop
+					directionsWidget.layer.stops.items = originalStops;
+					directionsWidget.layer.stops.forEach((stop) => (stop.sequence = null));
+					const finalSol = await directionsWidget.layer.solve({ apiKey });
+
+					//directionsWidget.layer.update(finalSol);
+
+
+
+					const alert = document.getElementById("range-alert");
+					const title = document.getElementById("alert-title");
+					const message = document.getElementById("alert-message");
+
+					if (canBeMade) {
+						alert.kind = "success";
+						title.textContent = "You're good to go!";
+						message.textContent = `Your vehicle can make the trip.`;
+					} else {
+						alert.kind = "danger";
+						title.textContent = "Route is too far!";
+						message.textContent = `Your vehicle can't make it. Try looking for charging stations?`;
+					}
+
+					alert.open = true;
+					statusContainer.innerHTML = legMessages.map(msg => `<div>${msg}</div>`).join("");
+				}
+			);
+
+			reactiveUtils.on(
+				() => view.popup,
+				"trigger-action",
+				async (event) => {
+					if (event.action.id === "add-to-route") {
+						const feature = view.popup.selectedFeature;
+
+						if (feature?.geometry) {
+
+							// Create a new stop using a charging station's geometry
+							const newStop = {
+								geometry: feature.geometry,
+								name: feature.attributes?.Station_Name || "Charging Station"
+							};
+
+							const { stops } = directionsWidget.layer;
+
+							stops.splice(
+								stops.length - 1, // index of second to last
+								0,        // nothing to delete
+								newStop,          // new stop to add
+							);
+							directionsWidget.layer.stops.forEach((stop) => (stop.sequence = null));
+
+							const solution = await directionsWidget.layer.solve({ apiKey });
+							console.log((solution.routeInfo.totalDistance) / 1000);
+							directionsWidget.layer.update(solution);
+							console.log("has been changed")
+							filterChargingStations(currentRouteGeometry);
+							// close pop up
+							view.popup.close();
+
+							//Showing alert it was added
+							const alert = document.getElementById("range-alert");
+							if (alert) {
+								document.getElementById("alert-title").textContent = "Stop Added";
+								document.getElementById("alert-message").textContent = `${feature.attributes.Station_Name} was added to your route.`;
+								alert.kind = "info";
+								alert.open = true;
+							}
+
+							console.log(feature.geometry);
+						}
+					}
+				}
+			);
+			/* END Connecting Varaiables to CSS ============================================================================================================================================================*/
+
+		}); // end script
+	</script>
+</head>
+
+<body>
+	<calcite-shell>
+		<!-- Side Panel (Right side) -->
+		<calcite-shell-panel slot="panel-end" width="m"> <!-- Made narrower -->
+			<calcite-panel>
+
+				<!-- Block: Vehicle Setup -->
+				<calcite-block collapsible expanded heading="Vehicle Setup"
+					description="Select your EV and battery level" icon-start="car">
+					<!-- Battery Slider -->
+					<calcite-label layout="default">
+						Select Battery Percentage
+						<calcite-slider id="battery-slider" value="65" min="0" max="100" precise ticks="25" label-ticks
+							label-handles max-label="Low Charge" min-label="Full Charge" fill-placement="start"
+							scale="m"></calcite-slider>
+					</calcite-label>
+
+					<!-- Car Dropdown -->
+					<calcite-label layout="default" style="margin-top: 1rem;">
+						Select Electric Vehicle
+						<calcite-dropdown id="car-dropdown" width="full">
+							<calcite-button slot="trigger" width="full">Choose a Car</calcite-button>
+							<calcite-dropdown-group id="car-options-group" group-title="Electric Vehicles">
+								<!-- Items will be dynamically populated -->
+							</calcite-dropdown-group>
+						</calcite-dropdown>
+					</calcite-label>
+				</calcite-block>
+
+				<calcite-label layout="default" style="margin-top: 0.5rem;">
+					Selected Car:
+					<div id="selected-car-display" style="font-weight: 600; padding-top: 0.25rem;">None selected</div>
+				</calcite-label>
+
+				<!-- Block: Buffer Rings -->
+				<calcite-block collapsible expanded heading="Buffer Rings"
+					description="Toggle visibility of service areas" icon-start="layers">
+					<calcite-label layout="default">
+						<calcite-label layout="inline">
+							<calcite-checkbox id="show-ring-5-10" disabled></calcite-checkbox>
+							Show 5–10% Ring
+						</calcite-label>
+						<calcite-label layout="inline">
+							<calcite-checkbox id="show-ring-10-20" disabled></calcite-checkbox>
+							Show 10–20% Ring
+						</calcite-label>
+						<calcite-label layout="inline">
+							<calcite-checkbox id="show-ring-20-full" disabled></calcite-checkbox>
+							Show 20–Full Ring
+						</calcite-label>
+						<calcite-button id="find-geometry" width="full" scale="m" appearance="outline" disabled>
+							Find Geometry
+						</calcite-button>
+					</calcite-label>
+
+				</calcite-block>
+
+				<calcite-block collapsible expanded heading="Charing Station Search"
+					description="Find the best charging station for your trip" icon-start="battery-charging" collapsed>
+					<calcite-label layout="default">
+						EV Charging Station Distance from
+						<calcite-slider id="range-slider" value="5" min="1" max="15" precise ticks="1" label-ticks
+							label-handles max-label="Close By" min-label="Far" fill-placement="start" scale="m"
+							disabled></calcite-slider>
+						<calcite-button id="find-stations-button" width="full" scale="m" appearance="outline" disabled>
+							Show Charging Stations
+						</calcite-button>
+						<calcite-button id="no-find-stations-button" width="full" scale="m" appearance="outline"
+							disabled>
+							Hide Charging Stations
+						</calcite-button>
+
+					</calcite-label>
+
+
+				</calcite-block>
+				<calcite-block collapsible expanded heading="Journey Calculation"
+					description="See if destination is possible" icon-start="information">
+					<calcite-label layout="default">
+						See status of each leg of journey
+						<div id="leg-status-messages" style="margin-top: 1em;"></div>
+					</calcite-label>
+				</calcite-block>
+
+
+				<calcite-alert id="range-alert" auto-close duration="fast" kind="success" label="Range alert">
+					<div slot="title" id="alert-title">Checking route...</div>
+					<div slot="message" id="alert-message">Checking battery range...</div>
+				</calcite-alert>
+				<calcite-alert id="geo-alert" auto-close duration="fast" kind="success" label="Geometry ready">
+					<div slot="title" id="geo-title">Geometries Ready</div>
+					<div slot="message" id="geo-message">Select Service area geometries.</div>
+				</calcite-alert>
+
+				<!-- <calcite-button id="reset" width="full" scale="m" appearance="outline">
+					Hard Reset
+				</calcite-button> -->
+
+				<calcite-loader id="service-area-loader" label="Solving service area..." text="Solving Service Area"
+					type="indeterminate" scale="m" hidden></calcite-loader>
+
+			</calcite-panel>
+		</calcite-shell-panel>
+
+		<!-- Map view with no heading -->
+		<div id="viewDiv" style="height: 100%; width: 100%;"></div>
+	</calcite-shell>
+
+</body>
+
+</html>
